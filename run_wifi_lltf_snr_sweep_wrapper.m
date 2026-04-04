@@ -26,12 +26,10 @@ for ii = 1:numel(snrList)
 end
 
 resultsTbl = table(snrList(:), lsMaeList, lmmseMaeList, ...
-    'VariableNames', {'snrDb', 'lsMae', 'lmmseMae'});
+    'VariableNames', {'snrDb', 'LS MAE', 'LMMSE MAE'});
 
 csvFile = 'wifi_lltf_results.csv';
 writetable(resultsTbl, csvFile);
-
-fprintf('============================================================\n');
 fprintf('Saved result table: %s\n', csvFile);
 
 end
