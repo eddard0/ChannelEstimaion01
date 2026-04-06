@@ -1,11 +1,13 @@
 function generate_wifi_lltf_dataset(snrDb)
 % Generate two datasets with the same SNR simulation process:
-% 1) 200000 samples -> <baseName>.csv
-% 2) 20000 samples  -> <baseName>_eval.csv
+% 1) 100000 samples -> <baseName>.csv
+% 2) 10000 samples  -> <baseName>_eval.csv
 %
 % useCFO:
 %   true  -> apply CFO
 %   false -> remove CFO effect
+%
+% This version simulates L-LTF only.
 
 if nargin < 1
     snrDb = 18;
@@ -26,24 +28,24 @@ fcHz = 2.412e9;
 useCFO = false;
 
 %% Channel Setting
-numTapsRange = [2 8];
-maxDelaySamples = 15;
-pdpTauSamples = 4;
+numTapsRange = [2 4];
+maxDelaySamples = 10;
+pdpTauSamples = 2;
 
-pLOS = 0.60;
+pLOS = 0.30;
 
-kDbMean = 7.0;
-kDbStd  = 4.0;
+kDbMean = 3.0;
+kDbStd  = 2.0;
 kDbMin  = 0.0;
-kDbMax  = 15.0;
+kDbMax  = 7.0;
 
 pSecondWeakRician = 0.20;
-kDbMeanWeak = 3.0;
-kDbStdWeak  = 2.0;
+kDbMeanWeak = 2.0;
+kDbStdWeak  = 1.0;
 kDbMinWeak  = 0.0;
-kDbMaxWeak  = 6.0;
+kDbMaxWeak  = 4.0;
 
-speedRangeMps = [0 10];
+speedRangeMps = [0 5];
 
 cfoPpmMean = 0;
 cfoPpmStd  = 0.5;
@@ -68,15 +70,8 @@ Fs = wlanSampleRate(cfg);
 cLight = 299792458;
 lambda = cLight / fcHz;
 
-txLSTF = wlanLSTF(cfg);
 txLLTF = wlanLLTF(cfg);
-
-txLSTF = txLSTF(:);
 txLLTF = txLLTF(:);
-txPreamble = [txLSTF; txLLTF];
-
-lltfStart = numel(txLSTF) + 1;
-lltfEnd   = lltfStart + numel(txLLTF) - 1;
 
 ofdmInfo = wlanNonHTOFDMInfo('L-LTF', cbw);
 numTones = ofdmInfo.NumTones;
@@ -95,9 +90,7 @@ P.fcHz = fcHz;
 P.cfg = cfg;
 P.Fs = Fs;
 P.lambda = lambda;
-P.txPreamble = txPreamble;
-P.lltfStart = lltfStart;
-P.lltfEnd = lltfEnd;
+P.txLLTF = txLLTF;
 P.numInputCols = numInputCols;
 P.numLabelCols = numLabelCols;
 P.numTotalCols = numTotalCols;
@@ -236,7 +229,7 @@ for n = 1:numSamples
             'Seed', seedNow);
     end
 
-    %% 4) Filter preamble through channel
+    %% 4) Filter L-LTF only through channel
     chanInfo = info(chan);
     if isfield(chanInfo, 'ChannelFilterDelay')
         chDelay = chanInfo.ChannelFilterDelay;
@@ -245,22 +238,20 @@ for n = 1:numSamples
     end
 
     tailPad = chDelay + max(delaysSamp);
-    txPad = [P.txPreamble; zeros(tailPad, 1)];
+    txPad = [P.txLLTF; zeros(tailPad, 1)];
 
     rxPadChanOnly = chan(txPad, initTime);
-    rxPreambleChanOnly = rxPadChanOnly(chDelay + (1:numel(P.txPreamble)));
+    rxLLTFChanOnly = rxPadChanOnly(chDelay + (1:numel(P.txLLTF)));
     release(chan);
 
     %% 5) Label
-    rxLLTFLabel = rxPreambleChanOnly(P.lltfStart:P.lltfEnd);
-    demodLLTF = wlanLLTFDemodulate(rxLLTFLabel, P.cfg);
+    demodLLTF = wlanLLTFDemodulate(rxLLTFChanOnly, P.cfg);
     chEst = wlanLLTFChannelEstimate(demodLLTF, P.cfg);
     H52 = chEst(:,1,1);
 
     %% 6) Input X = channel + CFO + AWGN
-    rxPreambleWithCFO = applyCFO(rxPreambleChanOnly, thisCfoHz, P.Fs);
-    rxLLTFClean = rxPreambleWithCFO(P.lltfStart:P.lltfEnd);
-    rxLLTFIn = addAwgnBySNR(rxLLTFClean, thisSnrDb);
+    rxLLTFWithCFO = applyCFO(rxLLTFChanOnly, thisCfoHz, P.Fs);
+    rxLLTFIn = addAwgnBySNR(rxLLTFWithCFO, thisSnrDb);
 
     %% 7) Save row
     DATA(n,:) = single([complexToIQIQRow(rxLLTFIn), complexToIQIQRow(H52)]);
