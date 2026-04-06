@@ -16,7 +16,7 @@ for ii = 1:numel(snrList)
     fprintf('============================================================\n');
     fprintf('SNR = %d dB\n', snrDb);
 
-    %generate_wifi_lltf_dataset(snrDb);
+    generate_wifi_lltf_dataset(snrDb);
 
     evalCsv = sprintf('wifi_lltf_dataset_%ddb_eval.csv', round(snrDb));
     [lsMae, lmmseMae] = evaluate_wifi_lltf_ls_mmse_mae(evalCsv);
@@ -26,7 +26,7 @@ for ii = 1:numel(snrList)
 end
 
 resultsTbl = table(snrList(:), lsMaeList, lmmseMaeList, ...
-    'VariableNames', {'snrDb', 'LS MAE', 'LMMSE MAE'});
+    'VariableNames', {'SNR DB', 'LS MAE', 'LMMSE MAE'});
 
 csvFile = 'wifi_lltf_results.csv';
 writetable(resultsTbl, csvFile);
