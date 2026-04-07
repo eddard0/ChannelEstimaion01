@@ -1,7 +1,12 @@
-function generate_wifi_lltf_dataset(snrDb)
+function generate_wifi_lltf_dataset(snrDb, channelType)
 % Generate two datasets with the same SNR simulation process:
 % 1) 100000 samples -> <baseName>.csv
 % 2) 10000 samples  -> <baseName>_eval.csv
+%
+% channelType:
+%   'rayleigh' -> Rayleigh fading channel
+%   'rician'   -> Rician fading channel
+%   'awgn'     -> AWGN only (no fading, no multipath)
 %
 % useCFO:
 %   true  -> apply CFO
@@ -9,9 +14,17 @@ function generate_wifi_lltf_dataset(snrDb)
 %
 % This version simulates L-LTF only.
 
-if nargin < 1
+if nargin < 1 || isempty(snrDb)
     snrDb = 18;
 end
+
+if nargin < 2 || isempty(channelType)
+    channelType = 'rayleigh';
+end
+
+channelType = lower(char(channelType));
+assert(ismember(channelType, {'rayleigh','rician','awgn'}), ...
+    'channelType must be ''rayleigh'', ''rician'', or ''awgn''.');
 
 %% Dataset sizes
 numMainSamples = 100000;
@@ -31,8 +44,6 @@ useCFO = false;
 numTapsRange = [2 4];
 maxDelaySamples = 10;
 pdpTauSamples = 2;
-
-pLOS = 0.30;
 
 kDbMean = 3.0;
 kDbStd  = 2.0;
@@ -62,7 +73,6 @@ assert(isscalar(snrDb) && isfinite(snrDb), 'snrDb must be a finite scalar.');
 assert(numTapsRange(1) >= 1, 'numTapsRange(1) must be >= 1.');
 assert(numTapsRange(1) <= numTapsRange(2), 'Invalid numTapsRange.');
 assert(speedRangeMps(1) <= speedRangeMps(2), 'Invalid speedRangeMps.');
-assert(pLOS >= 0 && pLOS <= 1, 'pLOS must be in [0, 1].');
 
 %% WLAN setup
 cfg = wlanNonHTConfig('ChannelBandwidth', cbw);
@@ -85,6 +95,8 @@ numTotalCols = numInputCols + numLabelCols;
 
 %% Shared config
 P = struct();
+P.channelType = channelType;
+
 P.cbw = cbw;
 P.fcHz = fcHz;
 P.cfg = cfg;
@@ -99,7 +111,6 @@ P.numTapsRange = numTapsRange;
 P.maxDelaySamples = maxDelaySamples;
 P.pdpTauSamples = pdpTauSamples;
 
-P.pLOS = pLOS;
 P.kDbMean = kDbMean;
 P.kDbStd = kDbStd;
 P.kDbMin = kDbMin;
@@ -122,6 +133,7 @@ P.numSinusoids = numSinusoids;
 
 %% Summary
 fprintf('Configuration summary\n');
+fprintf('  Channel type     : %s\n', channelType);
 fprintf('  Bandwidth        : %s\n', cbw);
 fprintf('  Sample rate      : %.3f MHz\n', Fs/1e6);
 fprintf('  Center frequency : %.6f GHz\n', fcHz/1e9);
@@ -159,19 +171,8 @@ fprintf('Generating %s dataset (%d samples)...\n', tag, numSamples);
 tic;
 
 for n = 1:numSamples
-    %% 1) Random multipath profile
-    numTaps = randi(P.numTapsRange);
-    delaysSamp = sampleDelayProfile(numTaps, P.maxDelaySamples);
-    pathDelaysSec = delaysSamp / P.Fs;
-
-    pdp = exp(-delaysSamp / P.pdpTauSamples);
-    avgPathGainsDb = 10 * log10(pdp);
-
-    %% 2) SNR + random Doppler / CFO
+    %% 1) SNR + CFO
     thisSnrDb = snrDb;
-
-    thisSpeedMps = P.speedRangeMps(1) + (P.speedRangeMps(2) - P.speedRangeMps(1)) * rand;
-    thisMaxFdHz = thisSpeedMps / P.lambda;
 
     if P.useCFO
         rawCfoPpm = P.cfoPpmMean + P.cfoPpmStd * randn;
@@ -181,18 +182,66 @@ for n = 1:numSamples
         thisCfoHz = 0;
     end
 
-    %% 3) Scenario draw
-    isLOS = (rand < P.pLOS);
+    %% 2) Clean received L-LTF after selected channel
+    rxLLTFChanOnly = passThroughSelectedChannel(P, baseSeed, n);
 
-    seedNow = baseSeed + n - 1;
-    initTime = P.randomStartTimeMaxSec * rand;
+    %% 3) Label = frequency-domain channel response on 52 active tones
+    demodLLTF = wlanLLTFDemodulate(rxLLTFChanOnly, P.cfg);
+    chEst = wlanLLTFChannelEstimate(demodLLTF, P.cfg);
+    H52 = chEst(:,1,1);
 
-    if isLOS
+    %% 4) Input X = channel + CFO + AWGN
+    rxLLTFWithCFO = applyCFO(rxLLTFChanOnly, thisCfoHz, P.Fs);
+    rxLLTFIn = addAwgnBySNR(rxLLTFWithCFO, thisSnrDb);
+
+    %% 5) Save row
+    DATA(n,:) = single([complexToIQIQRow(rxLLTFIn), complexToIQIQRow(H52)]);
+
+    if mod(n, 5000) == 0 || n == numSamples
+        fprintf('  %6d / %6d done\n', n, numSamples);
+    end
+end
+
+elapsedSec = toc;
+fprintf('Finished %s dataset in %.2f sec\n\n', tag, elapsedSec);
+
+end
+
+
+function rxLLTFChanOnly = passThroughSelectedChannel(P, baseSeed, sampleIdx)
+switch P.channelType
+    case 'awgn'
+        % No fading, no multipath. Clean channel output is exactly txLLTF.
+        rxLLTFChanOnly = P.txLLTF;
+
+    case 'rayleigh'
+        [pathDelaysSec, avgPathGainsDb, maxDelaySamp, thisMaxFdHz, seedNow, initTime] = ...
+            sampleChannelProfile(P, baseSeed, sampleIdx);
+
+        chan = comm.RayleighChannel( ...
+            'SampleRate', P.Fs, ...
+            'PathDelays', pathDelaysSec, ...
+            'AveragePathGains', avgPathGainsDb, ...
+            'NormalizePathGains', true, ...
+            'MaximumDopplerShift', thisMaxFdHz, ...
+            'FadingTechnique', 'Sum of sinusoids', ...
+            'NumSinusoids', P.numSinusoids, ...
+            'InitialTimeSource', 'Input port', ...
+            'RandomStream', 'mt19937ar with seed', ...
+            'Seed', seedNow);
+
+        rxLLTFChanOnly = runChannel(chan, P.txLLTF, maxDelaySamp, initTime);
+
+    case 'rician'
+        [pathDelaysSec, avgPathGainsDb, maxDelaySamp, thisMaxFdHz, seedNow, initTime, numTaps] = ...
+            sampleChannelProfile(P, baseSeed, sampleIdx);
+
         kVec = zeros(1, numTaps);
         kVec(1) = 10^(sampleTruncGaussian(P.kDbMean, P.kDbStd, P.kDbMin, P.kDbMax) / 10);
 
         if numTaps >= 3 && rand < P.pSecondWeakRician
-            kVec(2) = 10^(sampleTruncGaussian(P.kDbMeanWeak, P.kDbStdWeak, P.kDbMinWeak, P.kDbMaxWeak) / 10);
+            kVec(2) = 10^(sampleTruncGaussian(P.kDbMeanWeak, P.kDbStdWeak, ...
+                P.kDbMinWeak, P.kDbMaxWeak) / 10);
         end
 
         losFd = zeros(1, numTaps);
@@ -215,55 +264,50 @@ for n = 1:numSamples
             'InitialTimeSource', 'Input port', ...
             'RandomStream', 'mt19937ar with seed', ...
             'Seed', seedNow);
-    else
-        chan = comm.RayleighChannel( ...
-            'SampleRate', P.Fs, ...
-            'PathDelays', pathDelaysSec, ...
-            'AveragePathGains', avgPathGainsDb, ...
-            'NormalizePathGains', true, ...
-            'MaximumDopplerShift', thisMaxFdHz, ...
-            'FadingTechnique', 'Sum of sinusoids', ...
-            'NumSinusoids', P.numSinusoids, ...
-            'InitialTimeSource', 'Input port', ...
-            'RandomStream', 'mt19937ar with seed', ...
-            'Seed', seedNow);
-    end
 
-    %% 4) Filter L-LTF only through channel
-    chanInfo = info(chan);
-    if isfield(chanInfo, 'ChannelFilterDelay')
-        chDelay = chanInfo.ChannelFilterDelay;
-    else
-        chDelay = 0;
-    end
+        rxLLTFChanOnly = runChannel(chan, P.txLLTF, maxDelaySamp, initTime);
 
-    tailPad = chDelay + max(delaysSamp);
-    txPad = [P.txLLTF; zeros(tailPad, 1)];
-
-    rxPadChanOnly = chan(txPad, initTime);
-    rxLLTFChanOnly = rxPadChanOnly(chDelay + (1:numel(P.txLLTF)));
-    release(chan);
-
-    %% 5) Label
-    demodLLTF = wlanLLTFDemodulate(rxLLTFChanOnly, P.cfg);
-    chEst = wlanLLTFChannelEstimate(demodLLTF, P.cfg);
-    H52 = chEst(:,1,1);
-
-    %% 6) Input X = channel + CFO + AWGN
-    rxLLTFWithCFO = applyCFO(rxLLTFChanOnly, thisCfoHz, P.Fs);
-    rxLLTFIn = addAwgnBySNR(rxLLTFWithCFO, thisSnrDb);
-
-    %% 7) Save row
-    DATA(n,:) = single([complexToIQIQRow(rxLLTFIn), complexToIQIQRow(H52)]);
-
-    if mod(n, 5000) == 0 || n == numSamples
-        fprintf('  %6d / %6d done\n', n, numSamples);
-    end
+    otherwise
+        error('Unsupported channelType: %s', P.channelType);
+end
 end
 
-elapsedSec = toc;
-fprintf('Finished %s dataset in %.2f sec\n\n', tag, elapsedSec);
 
+function [pathDelaysSec, avgPathGainsDb, maxDelaySamp, thisMaxFdHz, seedNow, initTime, numTaps] = ...
+    sampleChannelProfile(P, baseSeed, sampleIdx)
+
+numTaps = randi(P.numTapsRange);
+delaysSamp = sampleDelayProfile(numTaps, P.maxDelaySamples);
+pathDelaysSec = delaysSamp / P.Fs;
+
+pdp = exp(-delaysSamp / P.pdpTauSamples);
+avgPathGainsDb = 10 * log10(pdp);
+
+thisSpeedMps = P.speedRangeMps(1) + ...
+    (P.speedRangeMps(2) - P.speedRangeMps(1)) * rand;
+thisMaxFdHz = thisSpeedMps / P.lambda;
+
+seedNow = baseSeed + sampleIdx - 1;
+initTime = P.randomStartTimeMaxSec * rand;
+maxDelaySamp = max(delaysSamp);
+end
+
+
+function rxLLTF = runChannel(chan, txLLTF, maxDelaySamp, initTime)
+chanInfo = info(chan);
+if isfield(chanInfo, 'ChannelFilterDelay')
+    chDelay = chanInfo.ChannelFilterDelay;
+else
+    chDelay = 0;
+end
+
+tailPad = chDelay + maxDelaySamp;
+txPad = [txLLTF; zeros(tailPad, 1)];
+
+rxPad = chan(txPad, initTime);
+rxLLTF = rxPad(chDelay + (1:numel(txLLTF)));
+
+release(chan);
 end
 
 
@@ -308,6 +352,7 @@ if cfoHz == 0
     y = x;
     return;
 end
+
 n = (0:numel(x)-1).';
 y = x .* exp(1j * 2 * pi * cfoHz * n / Fs);
 end
@@ -318,6 +363,7 @@ if isinf(snrDb)
     y = x;
     return;
 end
+
 signalPower = mean(abs(x).^2);
 noisePower = signalPower / (10^(snrDb / 10));
 noise = sqrt(noisePower / 2) * (randn(size(x)) + 1j * randn(size(x)));
