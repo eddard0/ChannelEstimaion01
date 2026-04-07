@@ -1,4 +1,4 @@
-function [lsMae, lmmseMae] = evaluate_wifi_lltf_ls_mmse_mae(evalCsv)
+function [lsNrmse, lmmseNrmse] = evaluate_wifi_lltf_ls_mmse_nrmse(evalCsv)
 % Evaluate LS and same-file LMMSE(MMSE-style baseline) using one *_eval.csv file.
 %
 % Dataset row format:
@@ -6,6 +6,10 @@ function [lsMae, lmmseMae] = evaluate_wifi_lltf_ls_mmse_mae(evalCsv)
 %
 % X : received L-LTF after channel + CFO + AWGN
 % Y : ground-truth channel label H(52)
+%
+% Output:
+%   lsNrmse    : normalized RMSE of LS estimate
+%   lmmseNrmse : normalized RMSE of same-file LMMSE estimate
 
 if nargin < 1
     evalCsv = 'wifi_lltf_dataset_6db_eval.csv';
@@ -25,7 +29,7 @@ for n = 1:numSamples
     hLs(:, n) = estimateLS(rx, cfg);
 end
 
-lsMae = computeIQMAE(hLs, hTrue);
+lsNrmse = computeNRMSE(hLs, hTrue);
 
 muH = mean(hTrue, 2);
 muZ = mean(hLs, 2);
@@ -40,11 +44,11 @@ reg = 1e-8 * real(trace(Czz)) / size(Czz, 1);
 W = Chz / (Czz + reg * eye(size(Czz)));
 
 hLmmse = muH + W * (hLs - muZ);
-lmmseMae = computeIQMAE(hLmmse, hTrue);
+lmmseNrmse = computeNRMSE(hLmmse, hTrue);
 
 fprintf('Results\n');
-fprintf('  LS MAE    : %.6f\n', lsMae);
-fprintf('  LMMSE MAE : %.6f\n', lmmseMae);
+fprintf('  LS NRMSE    : %.6f\n', lsNrmse);
+fprintf('  LMMSE NRMSE : %.6f\n', lmmseNrmse);
 fprintf('\n');
 fprintf('Note: LMMSE here is fitted and evaluated on the same *_eval file.\n');
 fprintf('      So it is useful for error inspection, but optimistic as a baseline.\n');
@@ -59,10 +63,13 @@ Hls = chEst(:, 1, 1);
 end
 
 
-function mae = computeIQMAE(Hhat, Htrue)
-errReal = abs(real(Hhat) - real(Htrue));
-errImag = abs(imag(Hhat) - imag(Htrue));
-mae = mean([errReal(:); errImag(:)]);
+function nrmse = computeNRMSE(Hhat, Htrue)
+num = sum(abs(Hhat(:) - Htrue(:)).^2);
+den = sum(abs(Htrue(:)).^2);
+
+assert(den > 0, 'Ground-truth energy is zero, cannot compute NRMSE.');
+
+nrmse = sqrt(num / den);
 end
 
 
