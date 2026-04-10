@@ -15,7 +15,7 @@ def run_snr_sweep(
     results_dir = resolve_results_dir(save_dir)
     os.makedirs(results_dir, exist_ok=True)
 
-    results = []
+    records = []
 
     for snr_db in snr_list:
         result = train_one_snr(
@@ -23,20 +23,19 @@ def run_snr_sweep(
             data_dir=data_dir,
             save_dir=save_dir,
         )
+        records.append((result["snr_db"], result["best_eval_nmae"]))
 
-        results.append(
-            {
-                "SNR_dB": result["snr_db"],
-                "DNN_NMAE": result["best_eval_nmae"],
-            }
-        )
+    records.sort(key=lambda item: item[0])
+    sorted_snr_list = [snr_db for snr_db, _ in records]
+    nmae_values = [best_eval_nmae for _, best_eval_nmae in records]
 
-    df = pd.DataFrame(results).sort_values("SNR_dB").reset_index(drop=True)
+    df = pd.DataFrame({"NMAE": nmae_values})
     csv_path = os.path.join(results_dir, csv_name)
     df.to_csv(csv_path, index=False)
 
     print("\nsweep finished.")
     print(f"Summary CSV saved to: {csv_path}")
+    print(f"Row order (SNR_dB): {sorted_snr_list}")
     print(df)
 
     return df, csv_path
