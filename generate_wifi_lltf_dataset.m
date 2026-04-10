@@ -6,25 +6,23 @@ function generate_wifi_lltf_dataset(snrDb, channelType)
 % channelType:
 %   'rayleigh' -> Rayleigh fading channel
 %   'rician'   -> Rician fading channel
-%   'awgn'     -> AWGN only (no fading, no multipath)
+%   'onetap'   -> AWGN (onetap fading, no multipath)
 %
 % useCFO:
 %   true  -> apply CFO
 %   false -> remove CFO effect
-%
-% This version simulates L-LTF only.
 
 if nargin < 1 || isempty(snrDb)
     snrDb = 18;
 end
 
 if nargin < 2 || isempty(channelType)
-    channelType = 'rayleigh';
+    channelType = 'onetap';
 end
 
 channelType = lower(char(channelType));
-assert(ismember(channelType, {'rayleigh','rician','awgn'}), ...
-    'channelType must be ''rayleigh'', ''rician'', or ''awgn''.');
+assert(ismember(channelType, {'onetap','rayleigh','rician'}), ...
+    'channelType must be ''onetap'', ''rayleigh'', or ''rician''.');
 
 %% Dataset sizes
 numMainSamples = 100000;
@@ -183,15 +181,15 @@ for n = 1:numSamples
     end
 
     %% 2) Clean received L-LTF after selected channel
-    rxLLTFChanOnly = passThroughSelectedChannel(P, baseSeed, n);
+    rxLLTF = passThroughSelectedChannel(P, baseSeed, n);
 
     %% 3) Label = frequency-domain channel response on 52 active tones
-    demodLLTF = wlanLLTFDemodulate(rxLLTFChanOnly, P.cfg);
+    demodLLTF = wlanLLTFDemodulate(rxLLTF, P.cfg);
     chEst = wlanLLTFChannelEstimate(demodLLTF, P.cfg);
     H52 = chEst(:,1,1);
 
     %% 4) Input X = channel + CFO + AWGN
-    rxLLTFWithCFO = applyCFO(rxLLTFChanOnly, thisCfoHz, P.Fs);
+    rxLLTFWithCFO = applyCFO(rxLLTF, thisCfoHz, P.Fs);
     rxLLTFIn = addAwgnBySNR(rxLLTFWithCFO, thisSnrDb);
 
     %% 5) Save row
@@ -208,11 +206,11 @@ fprintf('Finished %s dataset in %.2f sec\n\n', tag, elapsedSec);
 end
 
 
-function rxLLTFChanOnly = passThroughSelectedChannel(P, baseSeed, sampleIdx)
+function rxLLTF = passThroughSelectedChannel(P, baseSeed, sampleIdx)
 switch P.channelType
-    case 'awgn'
-        % No fading, no multipath. Clean channel output is exactly txLLTF.
-        rxLLTFChanOnly = P.txLLTF;
+    case 'onetap'
+        h = sampleOneTapGain(baseSeed, sampleIdx);
+        rxLLTF = h * P.txLLTF;
 
     case 'rayleigh'
         [pathDelaysSec, avgPathGainsDb, maxDelaySamp, thisMaxFdHz, seedNow, initTime] = ...
@@ -230,7 +228,7 @@ switch P.channelType
             'RandomStream', 'mt19937ar with seed', ...
             'Seed', seedNow);
 
-        rxLLTFChanOnly = runChannel(chan, P.txLLTF, maxDelaySamp, initTime);
+        rxLLTF = runChannel(chan, P.txLLTF, maxDelaySamp, initTime);
 
     case 'rician'
         [pathDelaysSec, avgPathGainsDb, maxDelaySamp, thisMaxFdHz, seedNow, initTime, numTaps] = ...
@@ -265,7 +263,7 @@ switch P.channelType
             'RandomStream', 'mt19937ar with seed', ...
             'Seed', seedNow);
 
-        rxLLTFChanOnly = runChannel(chan, P.txLLTF, maxDelaySamp, initTime);
+        rxLLTF = runChannel(chan, P.txLLTF, maxDelaySamp, initTime);
 
     otherwise
         error('Unsupported channelType: %s', P.channelType);
@@ -310,6 +308,10 @@ rxLLTF = rxPad(chDelay + (1:numel(txLLTF)));
 release(chan);
 end
 
+function h = sampleOneTapGain(baseSeed, sampleIdx)
+rs = RandStream('mt19937ar', 'Seed', baseSeed + sampleIdx - 1);
+h = (randn(rs, 1, 1) + 1j * randn(rs, 1, 1)) / sqrt(2);
+end
 
 function delaysSamp = sampleDelayProfile(numTaps, maxDelaySamples)
 if numTaps == 1
@@ -369,7 +371,6 @@ noisePower = signalPower / (10^(snrDb / 10));
 noise = sqrt(noisePower / 2) * (randn(size(x)) + 1j * randn(size(x)));
 y = x + noise;
 end
-
 
 function row = complexToIQIQRow(x)
 x = x(:).';
