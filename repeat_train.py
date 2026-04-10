@@ -3,7 +3,7 @@ import os
 
 import pandas as pd
 
-from train import train_one_snr
+from train import resolve_results_dir, train_one_snr
 
 
 def run_snr_sweep(
@@ -12,6 +12,9 @@ def run_snr_sweep(
     save_dir: str = "/home/jinx/project/CE01/results",
     csv_name: str = "results_table.csv",
 ):
+    results_dir = resolve_results_dir(save_dir)
+    os.makedirs(results_dir, exist_ok=True)
+
     results = []
 
     for snr_db in snr_list:
@@ -24,16 +27,17 @@ def run_snr_sweep(
         results.append(
             {
                 "snr_db": result["snr_db"],
-                "best_val_nrmse": result["best_val_nrmse"],
-                "last_val_nrmse": result["last_val_nrmse"],
+                "best_val_nmae": result["best_val_nmae"],
+                "best_model_path": result["best_model_path"],
+                "plot_path": result["plot_path"],
             }
         )
 
-    df = pd.DataFrame(results)
-    csv_path = os.path.join(save_dir, csv_name)
+    df = pd.DataFrame(results).sort_values("snr_db").reset_index(drop=True)
+    csv_path = os.path.join(results_dir, csv_name)
     df.to_csv(csv_path, index=False)
 
-    print("\nSNR sweep finished.")
+    print("\nsweep finished.")
     print(f"Summary CSV saved to: {csv_path}")
     print(df)
 
