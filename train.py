@@ -47,7 +47,7 @@ class LSChannelCFRDataset(Dataset):
     Dataset for supervised channel estimation after FFT-LS.
 
     Expected sample:
-        x: LS after FFT, 104-dimensional real vector
+        x: FFT 이후 LS 추정값, 104-dimensional real vector
         y: true channel frequency response, 104-dimensional real vector
 
     Column resolution rule:
